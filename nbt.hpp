@@ -123,15 +123,54 @@ void encode(std::ostream& os, std::integral auto val) {
   os.write(reinterpret_cast<char*>(&out), sizeof(out));
 }
 
+void encode(void** buffer, std::integral auto val, void* buffer_end) {
+  if((uint8_t*) buffer_end - (uint8_t*) *buffer < sizeof(val)) {
+    throw std::runtime_error {"buffer not enough"};
+    return;
+  }
+  auto out {nbeswap(val)};
+  *reinterpret_cast<decltype(val)*>(*buffer) = out;
+  *buffer = reinterpret_cast<void*>(
+      reinterpret_cast<uint8_t*>(*buffer) + sizeof(val));
+}
+
 template <std::integral T> T decode(std::istream& is) {
   T val;
   is.read(reinterpret_cast<char*>(&val), sizeof(val));
   return nbeswap(val);
 }
 
+template <std::integral T>
+T decode(const void** buffer, const void* buffer_end) {
+
+  if((const uint8_t*) buffer_end - (const uint8_t*) *buffer < sizeof(T)) {
+    throw std::runtime_error {"buffer not enough"};
+    return;
+  }
+
+  T val = *reinterpret_cast<const T*>(*buffer);
+
+  *buffer = reinterpret_cast<const void*>(
+      reinterpret_cast<const uint8_t*>(*buffer) + sizeof(T));
+  return nbeswap(val);
+}
+
 void encode(std::ostream& os, std::floating_point auto val) {
   using I = std::conditional_t<sizeof(val) <= sizeof(TagInt), TagInt, TagLong>;
   encode(os, std::bit_cast<I, decltype(val)>(val));
+}
+
+void encode(void** buffer, std::floating_point auto val, void* buffer_end) {
+
+  if((uint8_t*) buffer_end - (uint8_t*) *buffer < sizeof(val)) {
+    throw std::runtime_error {"buffer not enough"};
+    return;
+  }
+
+  *reinterpret_cast<decltype(val)*>(*buffer) = val;
+
+  *buffer = reinterpret_cast<void*>(
+      reinterpret_cast<uint8_t*>(*buffer) + sizeof(val));
 }
 
 template <std::floating_point T> T decode(std::istream& is) {
@@ -144,7 +183,19 @@ concept isTagEnd = std::same_as<T, TagEnd> || std::same_as<T, TagEnd&>;
 
 void encode(std::ostream& os, isTagEnd auto = nullptr) {
   os.put(TAG_END);
-} // namespace detail
+}
+
+void encode(void** buffer, isTagEnd auto, void* buffer_end) {
+
+  if(buffer_end <= buffer) {
+    throw std::runtime_error {"buffer not enough"};
+    return;
+  }
+  *reinterpret_cast<uint8_t*>(*buffer) = TAG_END;
+
+  *buffer = reinterpret_cast<void*>(
+      reinterpret_cast<uint8_t*>(*buffer) + sizeof(uint8_t));
+}
 
 template <isTagEnd T> T decode(std::istream& is) {
   is.ignore();
@@ -161,6 +212,21 @@ concept isTagString = std::same_as<T, TagString>;
 void encode(std::ostream& os, const isTagString auto& str) {
   encode<TagShort>(os, str.size());
   os.write(str.data(), str.size());
+}
+
+void encode(void** buffer, const isTagString auto& str, void* buffer_end) {
+  encode<TagShort>(buffer, str.size(), buffer_end);
+
+  if(reinterpret_cast<uint8_t*>(buffer_end) -
+          reinterpret_cast<uint8_t*>(*buffer) <
+      str.size()) {
+    throw std::runtime_error {"buffer not enough"};
+    return;
+  }
+  memcpy(*buffer, str.data(), str.size());
+
+  *buffer =
+      reinterpret_cast<void*>(reinterpret_cast<uint8_t*>(*buffer) + str.size());
 }
 
 template <isTagString T> T decode(std::istream& is) {
@@ -190,6 +256,13 @@ void encode(std::ostream& os, const TagArray auto& vec) {
     encode(os, el);
 }
 
+void encode(void** buffer, const TagArray auto& vec, void* buffer_end) {
+  encode<TagInt>(buffer, vec.size(), buffer_end);
+  for(auto el : vec) {
+    encode(buffer, el, buffer_end);
+  }
+}
+
 template <TagArray T> T decode(std::istream& is) {
   T vec(decode<TagInt>(is));
   for(auto& el : vec)
@@ -217,9 +290,17 @@ void print(std::ostream& os, const TagArray auto& vec) {
 template <typename T>
 concept isTagList = std::same_as<T, TagList>;
 
-template <typename T> void encode(std::ostream& os,
-    const T& val) requires isTagList<T> || std::same_as<T, Tag> {
+template <typename T> void encode(std::ostream& os, const T& val)
+requires isTagList<T> || std::same_as<T, Tag>
+{
   val.encode(os);
+}
+
+
+template <typename T> void encode(void** buffer, const T& val, void* buffer_end)
+requires isTagList<T> || std::same_as<T, Tag>
+{
+  val.encode(buffer, buffer_end);
 }
 
 void print(std::ostream& os, const isTagList auto& val,
@@ -233,6 +314,8 @@ template <typename T>
 concept isTagCompound = std::same_as<T, TagCompound>;
 
 void encode(std::ostream& os, const isTagCompound auto& map);
+
+void encode(void** buffer, const isTagCompound auto& map, void* buffer_end);
 
 template <isTagCompound T> T decode(std::istream& is);
 
@@ -260,6 +343,17 @@ struct TagList
       detail::encode<TagInt>(os, vec.size());
       for(const auto& val : vec)
         detail::encode(os, val);
+    };
+    std::visit(enc, *static_cast<const variant*>(this));
+  }
+
+  void encode(void** buffer, void* buffer_end) const {
+    detail::encode<TagByte>(buffer, index(), buffer_end);
+
+    auto enc = [&](const auto& vec) {
+      detail::encode<TagInt>(buffer, vec.size(), buffer_end);
+      for(const auto& val : vec)
+        detail::encode(buffer, val, buffer_end);
     };
     std::visit(enc, *static_cast<const variant*>(this));
   }
@@ -339,6 +433,14 @@ struct Tag : public std::variant<TagEnd, TagByte, TagShort, TagInt, TagLong,
     std::visit(enc, *static_cast<const variant*>(this));
   }
 
+  void encode(void** buffer, void* buffer_end) const {
+
+    auto enc = [&](const auto& val) {
+      detail::encode(buffer, val, buffer_end);
+    };
+    std::visit(enc, *static_cast<const variant*>(this));
+  }
+
   void decode(std::istream& is, size_t type) {
     switch(type) { // clang-format off
       case TAG_END:        *this = detail::decode<TagEnd>(is);       break;
@@ -383,6 +485,14 @@ void encode(std::ostream& os, const isTagCompound auto& map) {
     detail::encode(os, tag);
   }
   detail::encode<TagByte>(os, TAG_END);
+}
+void encode(void**buffer, const isTagCompound auto& map,void*buffer_end) {
+  for(const auto& [key, tag] : map) {
+    detail::encode<TagByte>(buffer, tag.index(),buffer_end);
+    detail::encode(buffer, key,buffer_end);
+    detail::encode(buffer, tag,buffer_end);
+  }
+  detail::encode<TagByte>(buffer, TAG_END,buffer_end);
 }
 
 template <isTagCompound T> T decode(std::istream& is) {
@@ -458,6 +568,16 @@ struct NBT {
       detail::encode(os, data->tags);
     } else {
       detail::encode<TagEnd>(os);
+    }
+  }
+
+    void encode(void**buffer,void*buffer_end) const {
+    if(data) {
+      detail::encode<TagByte>(buffer, TAG_COMPOUND,buffer_end);
+      detail::encode(buffer, data->name,buffer_end);
+      detail::encode(buffer, data->tags,buffer_end);
+    } else {
+      detail::encode<TagEnd>(buffer,nullptr,buffer_end);
     }
   }
 
