@@ -145,7 +145,7 @@ T decode(const void** buffer, const void* buffer_end) {
 
   if((const uint8_t*) buffer_end - (const uint8_t*) *buffer < sizeof(T)) {
     throw std::runtime_error {"buffer not enough"};
-    return;
+    return {};
   }
 
   T val = *reinterpret_cast<const T*>(*buffer);
@@ -178,6 +178,17 @@ template <std::floating_point T> T decode(std::istream& is) {
   return std::bit_cast<T, I>(decode<I>(is));
 }
 
+template <std::floating_point T>
+T decode(const void** buffer, const void* buffer_end) {
+
+  if((const uint8_t*) buffer_end - (const uint8_t*) *buffer < sizeof(T)) {
+    throw std::runtime_error {"buffer not enough"};
+    return {};
+  }
+  using I = std::conditional_t<sizeof(T) <= sizeof(TagInt), TagInt, TagLong>;
+  return std::bit_cast<T, I>(decode<I>(buffer, buffer_end));
+}
+
 template <typename T>
 concept isTagEnd = std::same_as<T, TagEnd> || std::same_as<T, TagEnd&>;
 
@@ -200,6 +211,17 @@ void encode(void** buffer, isTagEnd auto, void* buffer_end) {
 template <isTagEnd T> T decode(std::istream& is) {
   is.ignore();
   return {};
+}
+
+template <isTagEnd T> T decode(const void** buffer, const void* buffer_end) {
+
+  if((const uint8_t*) buffer_end - (const uint8_t*) *buffer < 1) {
+    throw std::runtime_error {"buffer not enough"};
+    return {};
+  }
+
+  *buffer = reinterpret_cast<const void*>(
+      reinterpret_cast<const uint8_t*>(*buffer) + 1);
 }
 
 void print(std::ostream& os, isTagEnd auto = nullptr) {
@@ -236,6 +258,23 @@ template <isTagString T> T decode(std::istream& is) {
   return str;
 }
 
+template <isTagString T> T decode(const void** buffer, const void* buffer_end) {
+  auto len {decode<TagShort>(buffer, buffer_end)};
+
+
+  if((const uint8_t*) buffer_end - (const uint8_t*) *buffer < len) {
+    throw std::runtime_error {"buffer not enough"};
+    return {};
+  }
+
+  TagString str(len, '\0');
+
+  memcpy(str.data(), *buffer, str.size());
+
+  *buffer = reinterpret_cast<const void*>(
+      reinterpret_cast<const uint8_t*>(*buffer) + len);
+}
+
 template <typename T>
 concept isPrint = std::integral<T> || std::floating_point<T> || isTagString<T>;
 
@@ -267,6 +306,15 @@ template <TagArray T> T decode(std::istream& is) {
   T vec(decode<TagInt>(is));
   for(auto& el : vec)
     el = decode<typename T::value_type>(is);
+  return vec;
+}
+
+template <TagArray T> T decode(const void** buffer, const void* buffer_end) {
+  T vec(decode<TagInt>(buffer, buffer_end));
+  for(auto& el : vec) {
+    el = decode<typename T::value_type>(buffer, buffer_end);
+  }
+
   return vec;
 }
 
@@ -310,6 +358,8 @@ void print(std::ostream& os, const isTagList auto& val,
 
 template <isTagList T> T decode(std::istream& is);
 
+template <isTagList T> T decode(const void** buffer, const void* buffer_end);
+
 template <typename T>
 concept isTagCompound = std::same_as<T, TagCompound>;
 
@@ -318,6 +368,9 @@ void encode(std::ostream& os, const isTagCompound auto& map);
 void encode(void** buffer, const isTagCompound auto& map, void* buffer_end);
 
 template <isTagCompound T> T decode(std::istream& is);
+
+template <isTagCompound T>
+T decode(const void** buffer, const void* buffer_end);
 
 void print(std::ostream& os, const isTagCompound auto& map,
     const std::string& indent = "");
@@ -335,6 +388,10 @@ struct TagList
 
   TagList(std::istream& is) {
     decode(is);
+  }
+
+  TagList(const void** buffer, const void* buffer_end) {
+    decode(buffer, buffer_end);
   }
 
   void encode(std::ostream& os) const {
@@ -373,6 +430,25 @@ struct TagList
       case TAG_COMPOUND:   *this = dec_vec<TagCompound>(is);  break;
       case TAG_INT_ARRAY:  *this = dec_vec<TagIntArray>(is);  break;
       case TAG_LONG_ARRAY: *this = dec_vec<TagLongArray>(is); break;
+      default:             throw std::runtime_error {"invalid tag type"};
+    } // clang-format on
+  }
+
+  void decode(const void** buffer, const void* buffer_end) {
+    switch(detail::decode<TagByte>(buffer, buffer_end)) { // clang-format off
+      case TAG_END:        *this = dec_vec<TagEnd>(buffer,buffer_end);       break;
+      case TAG_BYTE:       *this = dec_vec<TagByte>(buffer,buffer_end);      break;
+      case TAG_SHORT:      *this = dec_vec<TagShort>(buffer,buffer_end);     break;
+      case TAG_INT:        *this = dec_vec<TagInt>(buffer,buffer_end);       break;
+      case TAG_LONG:       *this = dec_vec<TagLong>(buffer,buffer_end);      break;
+      case TAG_FLOAT:      *this = dec_vec<TagFloat>(buffer,buffer_end);     break;
+      case TAG_DOUBLE:     *this = dec_vec<TagDouble>(buffer,buffer_end);    break;
+      case TAG_BYTE_ARRAY: *this = dec_vec<TagByteArray>(buffer,buffer_end); break;
+      case TAG_STRING:     *this = dec_vec<TagString>(buffer,buffer_end);    break;
+      case TAG_LIST:       *this = dec_vec<TagList>(buffer,buffer_end);      break;
+      case TAG_COMPOUND:   *this = dec_vec<TagCompound>(buffer,buffer_end);  break;
+      case TAG_INT_ARRAY:  *this = dec_vec<TagIntArray>(buffer,buffer_end);  break;
+      case TAG_LONG_ARRAY: *this = dec_vec<TagLongArray>(buffer,buffer_end); break;
       default:             throw std::runtime_error {"invalid tag type"};
     } // clang-format on
   }
@@ -417,6 +493,15 @@ private:
       el = detail::decode<T>(is);
     return vec;
   }
+
+  template <typename T>
+  std::vector<T> dec_vec(const void** buffer, const void* buffer_end) {
+    std::vector<T> vec(detail::decode<TagInt>(buffer, buffer_end));
+    for(auto& el : vec) {
+      el = detail::decode<T>(buffer, buffer_end);
+    }
+    return vec;
+  }
 };
 
 struct Tag : public std::variant<TagEnd, TagByte, TagShort, TagInt, TagLong,
@@ -426,6 +511,9 @@ struct Tag : public std::variant<TagEnd, TagByte, TagShort, TagInt, TagLong,
 
   Tag(std::istream& is, size_t type) {
     decode(is, type);
+  }
+  Tag(const void** buffer, size_t type, const void* buffer_end) {
+    decode(buffer, type, buffer_end);
   }
 
   void encode(std::ostream& os) const {
@@ -459,6 +547,24 @@ struct Tag : public std::variant<TagEnd, TagByte, TagShort, TagInt, TagLong,
       default:             throw std::runtime_error {"invalid tag type"};
     } //clang-format on
   }
+    void decode(const void**buffer,size_t type,const void*buffer_end) {
+    switch(type) { // clang-format off
+      case TAG_END:        *this = detail::decode<TagEnd>(buffer,buffer_end);       break;
+      case TAG_BYTE:       *this = detail::decode<TagByte>(buffer,buffer_end);      break;
+      case TAG_SHORT:      *this = detail::decode<TagShort>(buffer,buffer_end);     break;
+      case TAG_INT:        *this = detail::decode<TagInt>(buffer,buffer_end);       break;
+      case TAG_LONG:       *this = detail::decode<TagLong>(buffer,buffer_end);      break;
+      case TAG_FLOAT:      *this = detail::decode<TagFloat>(buffer,buffer_end);     break;
+      case TAG_DOUBLE:     *this = detail::decode<TagDouble>(buffer,buffer_end);    break;
+      case TAG_BYTE_ARRAY: *this = detail::decode<TagByteArray>(buffer,buffer_end); break;
+      case TAG_STRING:     *this = detail::decode<TagString>(buffer,buffer_end);    break;
+      case TAG_LIST:       *this = detail::decode<TagList>(buffer,buffer_end);      break;
+      case TAG_COMPOUND:   *this = detail::decode<TagCompound>(buffer,buffer_end);  break;
+      case TAG_INT_ARRAY:  *this = detail::decode<TagIntArray>(buffer,buffer_end);  break;
+      case TAG_LONG_ARRAY: *this = detail::decode<TagLongArray>(buffer,buffer_end); break;
+      default:             throw std::runtime_error {"invalid tag type"};
+    } //clang-format on
+  }
 
   void print(std::ostream& os) {
       auto pr = [&](const auto& val){detail::print(os, val);};
@@ -476,6 +582,9 @@ namespace detail {
 
 template <isTagList T> T decode(std::istream& is) {
   return TagList {is};
+}
+template <isTagList T> T decode(const void**buffer,const void*buffer_end) {
+  return TagList (buffer,buffer_end);
 }
 
 void encode(std::ostream& os, const isTagCompound auto& map) {
@@ -501,6 +610,16 @@ template <isTagCompound T> T decode(std::istream& is) {
   for(; type != TAG_END; type = decode<TagByte>(is)) {
     auto key {decode<TagString>(is)};
     map[key] = Tag {is, static_cast<size_t>(type)};
+  }
+  return map;
+}
+
+template <isTagCompound T> T decode(const void**buffer,const void*buffer_end) {
+  TagCompound map;
+  auto type {decode<TagByte>(buffer,buffer_end)};
+  for(; type != TAG_END; type = decode<TagByte>(buffer,buffer_end)) {
+    auto key {decode<TagString>(buffer,buffer_end)};
+    map[key] = Tag {buffer, static_cast<size_t>(type),buffer_end};
   }
   return map;
 }
@@ -556,6 +675,16 @@ struct NBT {
     if(type == TAG_COMPOUND) {
       auto name {detail::decode<TagString>(is)};
       data = NBTData {std::move(name), detail::decode<TagCompound>(is)};
+    } else if(type != TAG_END) {
+      throw std::runtime_error {"invalid tag type"};
+    }
+  }
+
+  void decode(const void**buffer,const void*buffer_end) {
+    auto type {detail::decode<TagByte>(buffer,buffer_end)};
+    if(type == TAG_COMPOUND) {
+      auto name {detail::decode<TagString>(buffer,buffer_end)};
+      data = NBTData {std::move(name), detail::decode<TagCompound>(buffer,buffer_end)};
     } else if(type != TAG_END) {
       throw std::runtime_error {"invalid tag type"};
     }
