@@ -3,3 +3,6 @@ build
 main
 out.nbt
 nbt.cpp
+
+compile_commands.json
+.cache/*
