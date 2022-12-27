@@ -17,16 +17,27 @@ function(setup_test name)
   set(target ${name}_bin)
   add_executable(${target} tests/test_${name}.cpp)
   target_compile_features(${target} PRIVATE cxx_std_23)
+
   if(RUN_COVERAGE)
     target_compile_options(${target} PRIVATE -fprofile-arcs;-ftest-coverage;-fno-inline)
     target_link_options(${target} PRIVATE --coverage)
   endif()
+
   add_test(
-      NAME test_${name}
-      COMMAND ${CMAKE_BINARY_DIR}/${target}
-      WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}/tests/data
+    NAME test_${name}
+    COMMAND ${CMAKE_BINARY_DIR}/${target}
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}/tests/data
   )
 endfunction(setup_test)
+
+find_package(Boost COMPONENTS CONTAINER)
+
+if(NOT ${BOOST_FOUND})
+  message(WARNING "Boost::Container not found. Compilation may fail.")
+endif()
+
+# message(STATUS ${Boost_INCLUDE_DIRS})
+include_directories(${Boost_INCLUDE_DIRS})
 
 setup_test(numerics)
 setup_test(string)
@@ -34,3 +45,6 @@ setup_test(arrays)
 setup_test(list)
 setup_test(compound)
 setup_test(misc)
+
+setup_test(arrays_buffer)
+setup_test(compound_buffer)
