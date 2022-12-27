@@ -26,15 +26,14 @@ int main() {
   // NBT r-value reference constructor and invalid tag exception
   try {
     nbt::NBT {std::istringstream {"not a tag"}};
-  } catch(std::exception&) {
-  }
+  } catch(std::exception&) {}
 
   // NBT TagCompound constructor
   nbt::NBT {tag_compound};
 
   nbt::TagCompound invalid;
   struct make_invalid_int {
-    nullptr_t val;
+    std::nullptr_t val;
     operator int() {
       throw std::runtime_error {"now you're invalid"};
     }
@@ -42,19 +41,16 @@ int main() {
 
   try {
     invalid["invalid_field"] = make_invalid_int {};
-  } catch(std::exception&) {
-  }
+  } catch(std::exception&) {}
 
   try {
     std::stringstream os {};
     nbt::detail::encode(os, invalid);
-  } catch(std::exception&) {
-  }
+  } catch(std::exception&) {}
 
   try {
     std::ostringstream {} << invalid;
-  } catch(std::exception&) {
-  }
+  } catch(std::exception&) {}
 
   std::stringstream invalid_buf {};
 
@@ -65,8 +61,7 @@ int main() {
 
   try {
     nbt::NBT {invalid_buf};
-  } catch(std::exception&) {
-  }
+  } catch(std::exception&) {}
 
   std::stringstream multi_TagEnd_list {};
   nbt::detail::encode<nbt::TagByte>(multi_TagEnd_list, nbt::TAG_END);
@@ -80,6 +75,5 @@ int main() {
 
   try {
     nbt::detail::decode<nbt::TagList>(invalid_list_buf);
-  } catch(std::exception&) {
-  }
+  } catch(std::exception&) {}
 };
